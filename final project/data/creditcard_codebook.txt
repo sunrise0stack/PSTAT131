@@ -1,0 +1,9 @@
+Codebook for variables of data set "creditcard"
+
+Time: Number of seconds elapsed between this transaction and the first transaction in the dataset.
+
+V1~V28: Numerical result of a PCA Dimensionality reduction to protect user identities and sensitive features.
+
+Amount: Transaction Amount.
+
+Class: The response variable which 1 for fraudulent transactions, 0 otherwise.
