@@ -1,0 +1,543 @@
+---
+title: "Credit Card Fraud Detection Using Machine Learning"
+subtitle : "UCSB PSTAT131 Final Project"
+author: "Sunrise Gao"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '2'
+  html_document:
+    toc: yes
+    code_folding: hide
+    toc_depth: 2
+    toc_float: yes
+    number_sections: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+With the development of technology, online shopping has been unprecedentedly easy and convenient by many applications and browsers that can auto-fill your personal information and save it online. People no longer need to re-type every information that is needed to shop online. Only a few click to get the job done. However, this could rise a major problem that people's personal information such as credit card, home address get stolen, and is used unauthorizedly and illegally. This is called credit card frauds.  Many shops and banks have developed a lot of way to protect customers from credit card fraud such as adding extra authorization step like Two-Factor Authentication(getting verify code from phone or email). But, there is always new way fraudsters get your information: Lost or stolen credit cards. Skimming your credit card, such as at a gas station pump. Therefore, early credit card fraud detection is essentially important.
+
+
+```{r, out.width = "400px", eval=TRUE}
+knitr::include_graphics("credit_cards.jpg")
+```
+
+
+## What is Credit Card Fraud Detection?
+
+Credit card fraud detection is the collective term for the policies, tools, methodologies, and practices that credit card companies and financial institutions take to combat identity fraud and stop fraudulent transactions. As today's well-developed technology, there is so many new ways that people's information could get leaked or stolen. Analyzing and improving a newer and better model and algorithm for credit card fraud detection frequently is very important. 
+
+## About the Dataset
+
+The dataset I will be using is from Kaggle.com called "Credit Card Fraud Detection". "The dataset contains transactions made by credit cards in September 2013 by European cardholders. This dataset presents transactions that occurred in two days, where we have 492 frauds out of 284,807 transactions. The dataset is highly unbalanced, the positive class (frauds) account for 0.172% of all transactions." (please see reference for source). 
+
+Now Let's get started. I will be doing exploratory data analysis first.
+
+
+# Exploratory Data Analysis
+
+## Loading Packages and Data
+
+Check rmd file for full packages list.
+
+```{r, include=FALSE, warning=FALSE}
+library(tidymodels)
+library(tidyverse)
+library(ISLR) 
+library(ISLR2) 
+library(discrim)
+library(poissonreg)
+library(corrr)
+library(klaR) 
+library(forcats)
+library(corrplot)
+library(pROC)
+library(psych)
+library(recipes)
+library(rsample)
+library(parsnip)
+library(workflows)
+library(janitor)
+library(glmnet)
+library(rpart.plot)
+library(vip)
+library(janitor)
+library(randomForest)
+library(xgboost)
+library(kknn)
+library(skimr)
+library(patchwork)
+library(janitor)
+tidymodels_prefer()
+```
+
+\
+**Loading Data**
+
+```{r, class.source = 'fold-show'}
+# read data
+mydata <- read.csv("creditcard.csv")
+head(mydata)
+```
+\
+**Checking Dimension**
+
+```{r, class.source = 'fold-show'}
+# check original data dimension
+dimension <- dim(mydata)
+dimension
+```
+
+The data set has 284807 observations and 31 columns. There is 1 column for Time, 28 columns for PCA transformation, 1 column for purchase amount, and 1 column for class. Please check codebook for a detailed explanation for every variable.
+
+\
+**Checking Missing Value**
+
+```{r, class.source = 'fold-show'}
+# check missing value
+sum(is.na(mydata))
+```
+
+There is no missing value. We are good to go.
+
+
+## Analyzing the Data
+
+```{r, class.source = 'fold-show'}
+# genuine and fraudulent count
+mydata %>%
+  count(Class)
+```
+
+Here, we see that class = "0" is labeled as the transaction is genuine and class = "1" is labeled as fraudulent. So, there are 284315 valid transactions and 492 fraudulent cases. As we can see only about 0.17% fraudulent transaction out all the transactions. The data is highly unbalanced. so I will first apply models without balancing it, and if we don’t get a good accuracy, we might have to find a way to balance this dataset.\
+
+```{r, class.source = 'fold-show'}
+# comparing summary of two transcation cases.
+genuine_case <- mydata %>% 
+  filter(Class == 0)
+
+describe(genuine_case$Amount)
+
+fraud_case <- mydata %>% 
+  filter(Class == 1)
+
+describe(fraud_case$Amount)
+
+```
+
+By comparing summary of genuine cases and fraud cases, we can see that the mean of fraud case is higher than genuine cases which means the average money transaction for the fraudulent cases is more. This makes sense as credit card fraud is intended to steal as much money as it could as once. So, higher amount transactions can be a factor to detect fraudulent case.
+
+
+## Visualizing the Data
+
+```{r, warning=FALSE}
+# correlation matrix
+correlation <- cor(mydata)
+corrplot(correlation, tl.cex = 0.6, number.cex = 0.5, method = "circle", type = "full")
+```
+
+In the correlation matrix we can see that most of the values do not correlate to each other but there are some values that either has a positive or a negative correlation with each other. For example, V2 and V5 are highly negatively correlated with Amount. We may consider if the values reflect a importance to the target component but this definitely gives us a deeper understanding of the data.\
+
+I will be doing data splitting in next step.\
+
+
+# Data Splitting
+
+**Convert class to factor**
+```{r, class.source = 'fold-show'}
+# convert class to factor
+mydata <- mydata %>%
+  mutate(Class = factor(Class, levels = c("1", "0"))) %>%
+  select(-Time, )
+```
+
+\
+**Initial Data Splitting**
+```{r,class.source = 'fold-show'}
+# splitting
+set.seed(2022)
+cc_split <- initial_split(mydata, prop = 0.80, strain = Class)
+cc_train <- training(cc_split)
+cc_test <- testing(cc_split)
+```
+
+\
+**Checking Dimension for Splitting Data**
+```{r, class.source = 'fold-show'}
+# check dimension for training and testing
+dim(cc_train)
+dim(cc_test)
+```
+
+Here, we will have 227845 values for training set and 56962 values for testing set.\
+
+
+# Model Fitting
+
+In this step, I will be fitting boosted tree, decision tree, logistic regression, and in total of 3 models.
+
+**Creating Recipe & K-Fold**
+```{r, class.source = 'fold-show'}
+# create recipe and remove zero variance
+cc_recipe <- recipe(Class ~ ., cc_train) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_zv(all_nominal_predictors()) %>%
+  step_normalize(all_predictors())
+
+# create k-fold
+cc_folds <- vfold_cv(cc_train, v = 5, strain = Class)
+```
+
+## Model 1: Boosted Tree
+
+First, I will do boosted tree model.
+
+### Setting up
+
+```{r, class.source = 'fold-show'}
+# setup
+bt_model <- boost_tree(trees = tune()) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+# define grid
+bt_grid <- grid_regular(trees(c(10,200)),levels = 10)
+
+# workflow
+bt_workflow <- workflow() %>%
+  add_model(bt_model) %>%
+  add_recipe(cc_recipe)
+
+bt_res <- tune_grid(
+  bt_workflow, 
+  resamples = cc_folds, 
+  grid = bt_grid, 
+  metrics = metric_set(roc_auc),)
+ 
+autoplot(bt_res)
+```
+
+\
+The roc_auc keeps increasing until reaches the peak around 0.978 with around 30 tress.
+
+### Fitting the Model
+
+```{r, class.source = 'fold-show'}
+# select best tree and fit
+best_tree <- select_best(bt_res)
+bt_final <- finalize_workflow(bt_workflow, best_tree)
+bt_final_fit <- fit(bt_final, data = cc_train)
+
+augment(bt_final_fit, new_data = cc_test)%>%
+  accuracy(truth = Class, estimate = .pred_class)
+```
+
+From the result above, the best boosted tree has 0.9995436 accuracy that almost equal to 1. (Notice: the exact result might by rounded when knitting, please see code for the exact value if needed.)
+
+### Heat Map
+
+```{r}
+# heat map
+augment(bt_final_fit, new_data = cc_test) %>%
+  conf_mat(truth = Class, estimate = .pred_class) %>%
+  autoplot(type = "heatmap")
+```
+
+\
+The best boosted tree model has successful predicted 69 of 87 observations with 0.9995435 accuracy.
+
+### ROC & AUC
+
+```{r}
+# ROC
+augment(bt_final_fit, new_data = cc_test)%>%
+  roc_curve(Class, .pred_1) %>%
+  autoplot()
+
+# AUC
+augment(bt_final_fit, new_data = cc_test) %>%
+  roc_auc(Class, .pred_1)
+```
+
+Boosted tree model looks great and has very high accuracy as it is the first model we fit. Let's see if other models can do best!
+
+
+## Model 2: Logistic Regression
+
+For the third model, I will be fitting logistic regression model.
+
+### Setting Up
+
+```{r, class.source = 'fold-show'}
+# setup
+log_model <- logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+
+# workflow
+log_workflow <- workflow() %>% 
+  add_model(log_model) %>% 
+  add_recipe(cc_recipe)
+
+```
+
+### Fitting the model
+
+```{r, class.source = 'fold-show', warning=FALSE}
+# fit the training data
+log_fit_train <- fit(log_workflow, cc_train)
+
+# predict
+predict(log_fit_train, new_data = cc_train, type = "class") %>% 
+  bind_cols(cc_train %>% select(Class)) %>% 
+  accuracy(truth = Class, estimate = .pred_class)
+
+# fit the testing data
+log_fit_test <- fit(log_workflow, cc_test)
+
+# predict
+predict(log_fit_test, new_data = cc_test, type = "class") %>% 
+  bind_cols(cc_test %>% select(Class)) %>% 
+  accuracy(truth = Class, estimate = .pred_class)
+```
+
+As the result above, logistic regression model also has a very high accuracy with both training and testing data, and accuracy for testing data is 0.9992978.
+
+
+### Heat Map
+
+```{r}
+# heat map
+augment(log_fit_test, new_data = cc_test) %>%
+  conf_mat(truth = Class, estimate = .pred_class) %>% 
+  autoplot(type = "heatmap")
+```
+
+Logistic regression model successful predicted 55 out of 87 observations.
+
+### ROC & AUC
+
+```{r}
+# RUC
+augment(log_fit_test, new_data = cc_test) %>%
+  roc_curve(Class, .pred_1) %>%
+  autoplot()
+
+ # AUC
+augment(log_fit_test, new_data = cc_test) %>%
+  roc_auc(Class, .pred_1)
+```
+
+
+## Model 3: Decision Tree Model
+
+For the third model, I will do decision tree model.
+
+### Setting Up
+
+```{r, class.source = 'fold-show'}
+# setup
+dt_model <- decision_tree() %>%
+  set_engine("rpart")
+
+dt_model_class <- dt_model %>%
+  set_mode("classification")
+
+# fit training data
+dt_model_fit <- dt_model_class %>%
+  fit(Class ~ ., data = cc_train)
+
+dt_model_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot(roundint=FALSE)
+```
+
+### Fiting the Model
+
+```{r, class.source = 'fold-show'}
+# fit testing data
+augment(dt_model_fit, new_data = cc_test) %>%
+  accuracy(truth = Class, estimate = .pred_class)
+```
+After fitting the model, the accuracy of desicion tree model is 0.9994382 which is very high as well.
+
+### Heat map
+```{r}
+augment(dt_model_fit, new_data = cc_test) %>%
+  conf_mat(truth = Class, estimate = .pred_class) %>%
+  autoplot(type = "heatmap")
+```
+
+As the result shown above, decision tree model has predicted 68 out of 87 observations.
+
+### AUC
+
+```{r}
+augment(dt_model_fit, new_data = cc_test) %>%
+  roc_auc(Class, .pred_1)
+```
+
+## Model 4: LDA
+
+Finally, I will be doing LDA and QDA model.
+
+### Setting Up
+```{r, class.source = 'fold-show'}
+#setup
+lda_model <- discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+# workflow
+lda_workflow <- workflow() %>% 
+  add_model(lda_model) %>% 
+  add_recipe(cc_recipe)
+
+```
+
+### Fitting the model
+```{r, class.source = 'fold-show'}
+# fit the training data
+lda_fit_train <- fit(lda_workflow, cc_train)
+
+# predict for training data
+predict(lda_fit_train, new_data = cc_train, type = "class") %>% 
+  bind_cols(cc_train %>% select(Class)) %>% 
+  accuracy(truth = Class, estimate = .pred_class)
+
+# fit the testing data
+lda_fit_test <- fit(lda_workflow, cc_test)
+
+# predict for testing data
+predict(lda_fit_test, new_data = cc_test, type = "class") %>% 
+  bind_cols(cc_test %>% select(Class)) %>% 
+  accuracy(truth = Class, estimate = .pred_class)
+```
+
+As the result above, LDA's accuracy is quite similar to logistic regression with 0.9992451 for testing data.
+
+### Heat Map
+
+```{r}
+# heat map
+augment(lda_fit_test, new_data = cc_test) %>%
+  conf_mat(truth = Class, estimate = .pred_class) %>% 
+  autoplot(type = "heatmap")
+```
+
+LDA model has predicted 61 out 87 observations.
+
+### ROC & AUC
+
+```{r}
+# ROC
+augment(lda_fit_test, new_data = cc_test) %>%
+  roc_curve(Class, .pred_1) %>%
+  autoplot()
+
+ # AUC
+augment(lda_fit_test, new_data = cc_test) %>%
+  roc_auc(Class, .pred_1)
+```
+
+## Model 5: QDA
+
+Here, I am going do the QDA model as the last one.
+
+### Setting Up
+```{r, class.source = 'fold-show'}
+# setup
+qda_model <- discrim_quad() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+# workflow
+qda_workflow <- workflow() %>% 
+  add_model(qda_model) %>% 
+  add_recipe(cc_recipe)
+```
+
+### Fitting the model
+```{r, class.source = 'fold-show'}
+# fit the training data
+qda_fit_train <- fit(qda_workflow, cc_train)
+
+# predict for training data
+predict(qda_fit_train, new_data = cc_train, type = "class") %>% 
+  bind_cols(cc_train %>% select(Class)) %>% 
+  accuracy(truth = Class, estimate = .pred_class)
+
+# fit the testing data
+qda_fit_test <- fit(qda_workflow, cc_test)
+
+# predict for testing data
+predict(qda_fit_test, new_data = cc_test, type = "class") %>% 
+  bind_cols(cc_test %>% select(Class)) %>% 
+  accuracy(truth = Class, estimate = .pred_class)
+```
+
+QDA model performed well with another high accuracy 0.9841824	 for testing data, though it is not as higher as logistic regression and LDA.
+
+### Heat Map
+
+```{r}
+# heat tmap
+augment(qda_fit_test, new_data = cc_test) %>%
+  conf_mat(truth = Class, estimate = .pred_class) %>% 
+  autoplot(type = "heatmap")
+```
+
+Surprisingly, QDA without the highest accuracy predicted 76 out of 87 which is the most out of all 5 models we have done so far.
+
+### ROC & AUC
+
+```{r}
+# ROC
+augment(qda_fit_test, new_data = cc_test) %>%
+  roc_curve(Class, .pred_1) %>%
+  autoplot()
+
+ # AUC
+augment(qda_fit_test, new_data = cc_test) %>%
+  roc_auc(Class, .pred_1)
+```
+
+# Conclusion
+
+Let's do a quick recap.
+
+We have done 4 model, all of the them have very high accuracy, but still there is only that perform the best prediction which is. 
+
+| Model         | Accuracy   | AUC       | Prediction   |
+|:--------------|------------|-----------|-------------:|
+| Boosted Tree  |  0.9995436 | 0.9698348 | 69 out of 87 |
+| Logistic Regression |  0.9992978 | 0.980975 | 55 out of 87 |
+| Decision Tree |  0.9994382	 | 0.9078385 | 68 out of 87 |
+| LDA           |  0.9992451	 | 0.9885043 | 61 out of 87 |
+| QDA           |  0.9885043	 | 0.9864512 | 76 out of 87 |
+
+
+In every model, we have compared their accuracy, AUC as well as prediction they have predicted by heat map. As the table shown above, with the data set is highly unbalanced as fraudulent transactions are way less than genuine transactions, QDA model surprisingly predicted the most truth values without the highest accuracy. On the other hand, boosted tree model has the highest accuracy and predicted 69 truth value out of 87. Although QDA model predicted more truth values than boosted tree model, but was the highest accuracy of all models we have fit, I would still pick boosted tree model as final model to do prediction. I believe that in the futures there will be a better method and faster algorithm to detect credit card fraud quickly and correctly though it is going to be a long way, but it is a learning process and it is all worth it at the end! Thank you for reading!
+
+```{r, out.width = "400px", eval=TRUE}
+knitr::include_graphics("ml.jpeg")
+```
+
+# Reference
+
+**Dataset**
+\
+[Credit Card Detection](https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud)\
+
+**Articles**
+\
+[Credit Card Fraud Detection: Top ML Solutions in 2022](https://spd.group/machine-learning/credit-card-fraud-detection/)\
+
+[Steps to Take if You Are a Victim of Credit Card Fraud](https://www.experian.com/blogs/ask-experian/credit-education/preventing-fraud/credit-card-fraud-what-to-do-if-you-are-a-victim/)\
+
+[Credit Card Fraud Detection: Everything You Need to Know](https://www.inscribe.ai/fraud-detection/credit-fraud-detection#:~:text=Credit%20card%20fraud%20detection%20is,fraud%20and%20stop%20fraudulent%20transactions.)\
